@@ -1,0 +1,53 @@
+# Headless mode
+# 1 = enabled, 0 = disabled
+HEADLESS=0
+
+# Public IPv4 or IPv6 address
+# SERVER_PUB_IP=
+
+# Public interface
+# SERVER_PUB_NIC=
+
+# WireGuard interface name
+# SERVER_WG_NIC=wg0
+
+# Server WireGuard IPv4
+# SERVER_WG_IPV4=10.66.66.1
+
+# Server WireGuard IPv6
+# SERVER_WG_IPV6=fd42:42:42::1
+
+# Server WireGuard port
+# SERVER_PORT=
+
+# Restrict traffic to specific ports
+# y = yes, n = no
+# RESTRICT_TRAFFIC=n
+
+# Ports to restrict traffic to (space or comma separated)
+# RESTRICT_PORT=
+
+# DNS resolvers
+# CLIENT_DNS_1=1.1.1.1
+# CLIENT_DNS_2=1.0.0.1
+
+# Allowed IPs list for generated clients
+# ALLOWED_IPS=
+
+# Enable IPv6
+# 1 = enabled, 0 = disabled
+# ENABLE_IPV6=1
+
+# Enable NAT
+# 1 = enabled, 0 = disabled
+# ENABLE_NAT=1
+
+# Install a client after setup
+# 1 = enabled, 0 = disabled
+# INSTALL_CLIENT=1
+
+# Client name (required in headless mode)
+# CLIENT_NAME=
+
+# Client configuration directory
+# CLIENT_CONFIG_DIR=
