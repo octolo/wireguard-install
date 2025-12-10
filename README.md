@@ -40,6 +40,27 @@ It will install WireGuard (kernel module and tools) on the server, configure it,
 
 Run the script again to add or remove clients!
 
+### Options
+
+```
+Usage: ./wireguard-install.sh [options]
+Options:
+  -c, --config <path>  Path to the configuration file (default: ./setup.conf)
+  -f, --force          Force reinstall if already installed
+  -l, --log <path>     Path to the log directory (default: .)
+  -h, --help           Show this help message
+```
+
+### Headless Install
+
+You can run the script in headless mode by creating a `setup.conf` file. You can use the `setup.conf.example` as a template.
+
+```bash
+cp setup.conf.example setup.conf
+# Edit setup.conf
+./wireguard-install.sh --config setup.conf
+```
+
 ## Providers
 
 I recommend these cheap cloud providers for your VPN server:
