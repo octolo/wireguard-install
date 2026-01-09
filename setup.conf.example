@@ -26,6 +26,8 @@ HEADLESS=0
 
 # Ports to restrict traffic to (space or comma separated)
 # RESTRICT_PORT=
+# Docker/NAT ports
+# RESTRICT_PORT_CONNTRACK=
 
 # DNS resolvers
 # CLIENT_DNS_1=1.1.1.1

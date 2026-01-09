@@ -252,7 +252,7 @@ function installQuestions() {
 	fi
 
 	if [[ "${HEADLESS}" == "1" ]]; then
-		if [[ -n "${RESTRICT_PORT}" ]]; then
+		if [[ -n "${RESTRICT_PORT}" ]] || [[ -n "${RESTRICT_PORT_CONNTRACK}" ]]; then
 			RESTRICT_TRAFFIC="y"
 		else
 			RESTRICT_TRAFFIC="n"
@@ -471,6 +471,7 @@ INSTALL_CLIENT=${INSTALL_CLIENT}
 ENABLE_NAT=${ENABLE_NAT}
 RESTRICT_TRAFFIC=${RESTRICT_TRAFFIC}
 RESTRICT_PORT="${RESTRICT_PORT[*]}"
+RESTRICT_PORT_CONNTRACK="${RESTRICT_PORT_CONNTRACK[*]}"
 CLIENT_CONFIG_DIR=${CLIENT_CONFIG_DIR}
 INSTALL_TIMESTAMP=$(date +%Y%m%d%H%M%S)" >/etc/wireguard/params
 
@@ -548,17 +549,29 @@ PostDown = iptables -D INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT" >>"/etc/wi
 		ALL_PORTS="${RESTRICT_PORT[*]}"
 		ALL_PORTS=${ALL_PORTS//,/ }
 
+		# Handle if RESTRICT_PORT_CONNTRACK is provided
+		ALL_PORTS_CONNTRACK="${RESTRICT_PORT_CONNTRACK[*]}"
+		ALL_PORTS_CONNTRACK=${ALL_PORTS_CONNTRACK//,/ }
+
 		echo "PostUp = iptables -I INPUT -i ${SERVER_WG_NIC} -j DROP" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 		echo "PostUp = iptables -I FORWARD -i ${SERVER_WG_NIC} -j DROP" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 		for PORT in ${ALL_PORTS}; do
 			echo "PostUp = iptables -I INPUT -i ${SERVER_WG_NIC} -p tcp --dport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 			echo "PostUp = iptables -I FORWARD -i ${SERVER_WG_NIC} -p tcp --dport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 		done
+		for PORT in ${ALL_PORTS_CONNTRACK}; do
+			echo "PostUp = iptables -I INPUT -i ${SERVER_WG_NIC} -p tcp --dport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
+			echo "PostUp = iptables -I FORWARD -i ${SERVER_WG_NIC} -p tcp -m conntrack --ctorigdstport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
+		done
 		echo "PostDown = iptables -D INPUT -i ${SERVER_WG_NIC} -j DROP" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 		echo "PostDown = iptables -D FORWARD -i ${SERVER_WG_NIC} -j DROP" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 		for PORT in ${ALL_PORTS}; do
 			echo "PostDown = iptables -D INPUT -i ${SERVER_WG_NIC} -p tcp --dport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 			echo "PostDown = iptables -D FORWARD -i ${SERVER_WG_NIC} -p tcp --dport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
+		done
+		for PORT in ${ALL_PORTS_CONNTRACK}; do
+			echo "PostDown = iptables -D INPUT -i ${SERVER_WG_NIC} -p tcp --dport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
+			echo "PostDown = iptables -D FORWARD -i ${SERVER_WG_NIC} -p tcp -m conntrack --ctorigdstport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 		done
 
 		if [[ "${ENABLE_IPV6}" != "0" ]]; then
@@ -568,11 +581,19 @@ PostDown = iptables -D INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT" >>"/etc/wi
 				echo "PostUp = ip6tables -I INPUT -i ${SERVER_WG_NIC} -p tcp --dport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 				echo "PostUp = ip6tables -I FORWARD -i ${SERVER_WG_NIC} -p tcp --dport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 			done
+			for PORT in ${ALL_PORTS_CONNTRACK}; do
+				echo "PostUp = ip6tables -I INPUT -i ${SERVER_WG_NIC} -p tcp --dport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
+				echo "PostUp = ip6tables -I FORWARD -i ${SERVER_WG_NIC} -p tcp -m conntrack --ctorigdstport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
+			done
 			echo "PostDown = ip6tables -D INPUT -i ${SERVER_WG_NIC} -j DROP" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 			echo "PostDown = ip6tables -D FORWARD -i ${SERVER_WG_NIC} -j DROP" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 			for PORT in ${ALL_PORTS}; do
 				echo "PostDown = ip6tables -D INPUT -i ${SERVER_WG_NIC} -p tcp --dport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 				echo "PostDown = ip6tables -D FORWARD -i ${SERVER_WG_NIC} -p tcp --dport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
+			done
+			for PORT in ${ALL_PORTS_CONNTRACK}; do
+				echo "PostDown = ip6tables -D INPUT -i ${SERVER_WG_NIC} -p tcp --dport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
+				echo "PostDown = ip6tables -D FORWARD -i ${SERVER_WG_NIC} -p tcp -m conntrack --ctorigdstport ${PORT} -j ACCEPT" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 			done
 		fi
 	fi
