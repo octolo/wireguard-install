@@ -61,6 +61,23 @@ cp setup.conf.example setup.conf
 ./wireguard-install.sh --config setup.conf
 ```
 
+### Private service forwarding
+
+Headless installations can publish an explicitly approved private service on
+the WireGuard server address. Rules are separated by spaces and use the format
+`protocol|listen_ip|listen_port|target_ip|target_port|snat_ip`:
+
+```bash
+SERVER_WG_IPV4=10.66.66.1
+PRIVATE_FORWARD_RULES="tcp|10.66.66.1|8006|10.0.5.10|8006|10.0.1.200"
+```
+
+Each rule creates interface- and source-restricted DNAT, forwarding, return,
+and SNAT rules in the generated WireGuard configuration. The listener must be
+`SERVER_WG_IPV4`, only IPv4 targets are supported, and the SNAT address must be
+assigned to the WireGuard server. Set `PRIVATE_FORWARD_RULES=""` and run with
+`--update` to remove previously generated forwards.
+
 ## Providers
 
 I recommend these cheap cloud providers for your VPN server:

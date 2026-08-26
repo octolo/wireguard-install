@@ -29,6 +29,11 @@ HEADLESS=0
 # Docker/NAT ports
 # RESTRICT_PORT_CONNTRACK=
 
+# Private service forwards, separated by spaces. Each rule uses:
+# protocol|listen_ip|listen_port|target_ip|target_port|snat_ip
+# The listener IP must equal SERVER_WG_IPV4.
+# PRIVATE_FORWARD_RULES="tcp|10.66.66.1|8006|10.0.5.10|8006|10.0.1.200"
+
 # DNS resolvers
 # CLIENT_DNS_1=1.1.1.1
 # CLIENT_DNS_2=1.0.0.1

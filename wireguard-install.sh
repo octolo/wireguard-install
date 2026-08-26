@@ -63,6 +63,103 @@ function installPackages() {
 	fi
 }
 
+function isValidIPv4() {
+	local ADDRESS=$1
+	local OCTETS
+	local OCTET
+
+	IFS='.' read -r -a OCTETS <<<"${ADDRESS}"
+	[[ ${#OCTETS[@]} -eq 4 ]] || return 1
+
+	for OCTET in "${OCTETS[@]}"; do
+		[[ ${OCTET} =~ ^[0-9]{1,3}$ ]] || return 1
+		((10#${OCTET} <= 255)) || return 1
+	done
+}
+
+function isValidPort() {
+	local PORT=$1
+
+	[[ ${PORT} =~ ^[0-9]+$ ]] || return 1
+	((10#${PORT} >= 1 && 10#${PORT} <= 65535))
+}
+
+function validatePrivateForwardRules() {
+	local RULE
+	local PROTOCOL
+	local LISTEN_IP
+	local LISTEN_PORT
+	local TARGET_IP
+	local TARGET_PORT
+	local SNAT_IP
+	local EXTRA_FIELD
+	local RULE_KEY
+	local SEEN_RULE_KEYS=" "
+
+	for RULE in ${PRIVATE_FORWARD_RULES:-}; do
+		IFS='|' read -r PROTOCOL LISTEN_IP LISTEN_PORT TARGET_IP TARGET_PORT SNAT_IP EXTRA_FIELD <<<"${RULE}"
+
+		if [[ -z ${PROTOCOL} || -z ${LISTEN_IP} || -z ${LISTEN_PORT} || -z ${TARGET_IP} || -z ${TARGET_PORT} || -z ${SNAT_IP} || -n ${EXTRA_FIELD} ]]; then
+			echo "Invalid private forward '${RULE}'. Expected protocol|listen_ip|listen_port|target_ip|target_port|snat_ip."
+			exit 1
+		fi
+
+		if [[ ${PROTOCOL} != "tcp" && ${PROTOCOL} != "udp" ]]; then
+			echo "Invalid protocol '${PROTOCOL}' in private forward '${RULE}'. Only tcp and udp are supported."
+			exit 1
+		fi
+
+		if ! isValidIPv4 "${LISTEN_IP}" || ! isValidIPv4 "${TARGET_IP}" || ! isValidIPv4 "${SNAT_IP}"; then
+			echo "Invalid IPv4 address in private forward '${RULE}'."
+			exit 1
+		fi
+
+		if ! isValidPort "${LISTEN_PORT}" || ! isValidPort "${TARGET_PORT}"; then
+			echo "Invalid port in private forward '${RULE}'."
+			exit 1
+		fi
+
+		if [[ ${LISTEN_IP} != "${SERVER_WG_IPV4}" ]]; then
+			echo "Private forward '${RULE}' must listen on SERVER_WG_IPV4 (${SERVER_WG_IPV4})."
+			exit 1
+		fi
+
+		RULE_KEY="${PROTOCOL}|${LISTEN_IP}|${LISTEN_PORT}"
+		if [[ ${SEEN_RULE_KEYS} == *" ${RULE_KEY} "* ]]; then
+			echo "Duplicate private forward listener '${RULE_KEY}'."
+			exit 1
+		fi
+		SEEN_RULE_KEYS+="${RULE_KEY} "
+	done
+}
+
+function appendPrivateForwardRules() {
+	local WG_CONFIG=$1
+	local WG_SUBNET="${SERVER_WG_IPV4%.*}.0/24"
+	local RULE
+	local PROTOCOL
+	local LISTEN_IP
+	local LISTEN_PORT
+	local TARGET_IP
+	local TARGET_PORT
+	local SNAT_IP
+
+	for RULE in ${PRIVATE_FORWARD_RULES:-}; do
+		IFS='|' read -r PROTOCOL LISTEN_IP LISTEN_PORT TARGET_IP TARGET_PORT SNAT_IP <<<"${RULE}"
+
+		cat >>"${WG_CONFIG}" <<EOF
+PostUp = iptables -w -t nat -I PREROUTING 1 -i ${SERVER_WG_NIC} -s ${WG_SUBNET} -d ${LISTEN_IP} -p ${PROTOCOL} --dport ${LISTEN_PORT} -j DNAT --to-destination ${TARGET_IP}:${TARGET_PORT}
+PostUp = iptables -w -I FORWARD 1 -i ${SERVER_WG_NIC} -s ${WG_SUBNET} -d ${TARGET_IP} -p ${PROTOCOL} --dport ${TARGET_PORT} -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+PostUp = iptables -w -I FORWARD 1 -o ${SERVER_WG_NIC} -s ${TARGET_IP} -d ${WG_SUBNET} -p ${PROTOCOL} --sport ${TARGET_PORT} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+PostUp = iptables -w -t nat -I POSTROUTING 1 -s ${WG_SUBNET} -d ${TARGET_IP} -p ${PROTOCOL} --dport ${TARGET_PORT} -j SNAT --to-source ${SNAT_IP}
+PostDown = iptables -w -t nat -D PREROUTING -i ${SERVER_WG_NIC} -s ${WG_SUBNET} -d ${LISTEN_IP} -p ${PROTOCOL} --dport ${LISTEN_PORT} -j DNAT --to-destination ${TARGET_IP}:${TARGET_PORT}
+PostDown = iptables -w -D FORWARD -i ${SERVER_WG_NIC} -s ${WG_SUBNET} -d ${TARGET_IP} -p ${PROTOCOL} --dport ${TARGET_PORT} -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+PostDown = iptables -w -D FORWARD -o ${SERVER_WG_NIC} -s ${TARGET_IP} -d ${WG_SUBNET} -p ${PROTOCOL} --sport ${TARGET_PORT} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+PostDown = iptables -w -t nat -D POSTROUTING -s ${WG_SUBNET} -d ${TARGET_IP} -p ${PROTOCOL} --dport ${TARGET_PORT} -j SNAT --to-source ${SNAT_IP}
+EOF
+	done
+}
+
 function isRoot() {
 	if [ "${EUID}" -ne 0 ]; then
 		echo "You need to run this script as root"
@@ -392,6 +489,8 @@ What DNS resolvers do you want to use for the clients?"
 		done
 	fi
 
+	validatePrivateForwardRules
+
 	if [[ "${HEADLESS}" != "1" ]]; then
 		echo ""
 		echo "Okay, that was all I needed. We are ready to setup your WireGuard server now."
@@ -477,8 +576,9 @@ HEADLESS=${HEADLESS}
 INSTALL_CLIENT=${INSTALL_CLIENT}
 ENABLE_NAT=${ENABLE_NAT}
 RESTRICT_TRAFFIC=${RESTRICT_TRAFFIC}
-RESTRICT_PORT="${RESTRICT_PORT[*]}"
-RESTRICT_PORT_CONNTRACK="${RESTRICT_PORT_CONNTRACK[*]}"
+RESTRICT_PORT=\"${RESTRICT_PORT[*]}\"
+RESTRICT_PORT_CONNTRACK=\"${RESTRICT_PORT_CONNTRACK[*]}\"
+PRIVATE_FORWARD_RULES=\"${PRIVATE_FORWARD_RULES[*]}\"
 CLIENT_CONFIG_DIR=${CLIENT_CONFIG_DIR}
 INSTALL_TIMESTAMP=$(date +%Y%m%d%H%M%S)" >/etc/wireguard/params
 
@@ -604,6 +704,8 @@ PostDown = iptables -D INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT" >>"/etc/wi
 			done
 		fi
 	fi
+
+	appendPrivateForwardRules "/etc/wireguard/${SERVER_WG_NIC}.conf"
 
 	# Enable routing on the server
 	if [[ "${ENABLE_IPV6}" == "0" ]]; then
@@ -963,6 +1065,8 @@ function updateWireGuard() {
 		source "${CONFIG_FILE}"
 	fi
 
+	validatePrivateForwardRules
+
 	# Save existing clients
 	CLIENTS_BLOCK=$(sed -n '/^### Client/,$p' "/etc/wireguard/${SERVER_WG_NIC}.conf")
 
@@ -983,8 +1087,9 @@ HEADLESS=${HEADLESS}
 INSTALL_CLIENT=${INSTALL_CLIENT}
 ENABLE_NAT=${ENABLE_NAT}
 RESTRICT_TRAFFIC=${RESTRICT_TRAFFIC}
-RESTRICT_PORT="${RESTRICT_PORT[*]}"
-RESTRICT_PORT_CONNTRACK="${RESTRICT_PORT_CONNTRACK[*]}"
+RESTRICT_PORT=\"${RESTRICT_PORT[*]}\"
+RESTRICT_PORT_CONNTRACK=\"${RESTRICT_PORT_CONNTRACK[*]}\"
+PRIVATE_FORWARD_RULES=\"${PRIVATE_FORWARD_RULES[*]}\"
 CLIENT_CONFIG_DIR=${CLIENT_CONFIG_DIR}
 INSTALL_TIMESTAMP=${INSTALL_TIMESTAMP}" >/etc/wireguard/params
 
@@ -1119,6 +1224,8 @@ PostDown = iptables -D INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT" >>"/etc/wi
 		fi
 	fi
 
+	appendPrivateForwardRules "/etc/wireguard/${SERVER_WG_NIC}.conf"
+
 	# Restore clients
 	if [[ -n "${CLIENTS_BLOCK}" ]]; then
 		echo "" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
@@ -1216,6 +1323,6 @@ if [[ -z "${SERVER_PUB_KEY}" ]]; then
 		# shellcheck disable=SC1091
 		source "${CONFIG_FILE}"
 	fi
-    # No need to redefine LOG_FILE here, it's done above.
+	# No need to redefine LOG_FILE here, it's done above.
 	installWireGuard
 fi
