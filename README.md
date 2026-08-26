@@ -78,6 +78,21 @@ and SNAT rules in the generated WireGuard configuration. The listener must be
 assigned to the WireGuard server. Set `PRIVATE_FORWARD_RULES=""` and run with
 `--update` to remove previously generated forwards.
 
+Headless installations can also route an explicit private destination already
+present in the clients' `AllowedIPs`. Rules are separated by spaces and use
+`protocol|target_ip|target_port|protected_subnet|snat_ip`:
+
+```bash
+ALLOWED_IPS="10.66.66.0/24,10.0.5.20/32"
+PRIVATE_ROUTE_RULES="tcp|10.0.5.20|443|10.0.5.0/24|10.0.1.200"
+```
+
+The generated policy accepts only the declared target and port, rejects other
+VPN traffic to its protected subnet, and uses SNAT for a deterministic return
+path. Set `PRIVATE_ROUTE_RULES=""` and run with `--update` to remove the rules.
+Existing client configuration files must be updated separately when
+`AllowedIPs` changes.
+
 ## Providers
 
 I recommend these cheap cloud providers for your VPN server:

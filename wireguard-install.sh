@@ -84,6 +84,51 @@ function isValidPort() {
 	((10#${PORT} >= 1 && 10#${PORT} <= 65535))
 }
 
+function isValidIPv4Cidr() {
+	local CIDR=$1
+	local ADDRESS
+	local PREFIX
+	local EXTRA_FIELD
+
+	IFS='/' read -r ADDRESS PREFIX EXTRA_FIELD <<<"${CIDR}"
+	[[ -z ${EXTRA_FIELD} ]] || return 1
+	isValidIPv4 "${ADDRESS}" || return 1
+	[[ ${PREFIX} =~ ^[0-9]+$ ]] || return 1
+	((10#${PREFIX} >= 0 && 10#${PREFIX} <= 32))
+}
+
+function ipv4ToInteger() {
+	local ADDRESS=$1
+	local A
+	local B
+	local C
+	local D
+
+	IFS='.' read -r A B C D <<<"${ADDRESS}"
+	echo "$(((10#${A} << 24) | (10#${B} << 16) | (10#${C} << 8) | 10#${D}))"
+}
+
+function ipv4BelongsToCidr() {
+	local ADDRESS=$1
+	local CIDR=$2
+	local NETWORK_ADDRESS=${CIDR%/*}
+	local PREFIX=${CIDR#*/}
+	local ADDRESS_INTEGER
+	local NETWORK_INTEGER
+	local MASK
+
+	ADDRESS_INTEGER=$(ipv4ToInteger "${ADDRESS}")
+	NETWORK_INTEGER=$(ipv4ToInteger "${NETWORK_ADDRESS}")
+
+	if ((10#${PREFIX} == 0)); then
+		MASK=0
+	else
+		MASK=$(((0xFFFFFFFF << (32 - 10#${PREFIX})) & 0xFFFFFFFF))
+	fi
+
+	(((ADDRESS_INTEGER & MASK) == (NETWORK_INTEGER & MASK)))
+}
+
 function validatePrivateForwardRules() {
 	local RULE
 	local PROTOCOL
@@ -130,6 +175,98 @@ function validatePrivateForwardRules() {
 			exit 1
 		fi
 		SEEN_RULE_KEYS+="${RULE_KEY} "
+	done
+}
+
+function validatePrivateRouteRules() {
+	local RULE
+	local PROTOCOL
+	local TARGET_IP
+	local TARGET_PORT
+	local PROTECTED_SUBNET
+	local SNAT_IP
+	local EXTRA_FIELD
+	local RULE_KEY
+	local SEEN_RULE_KEYS=" "
+
+	for RULE in ${PRIVATE_ROUTE_RULES:-}; do
+		IFS='|' read -r PROTOCOL TARGET_IP TARGET_PORT PROTECTED_SUBNET SNAT_IP EXTRA_FIELD <<<"${RULE}"
+
+		if [[ -z ${PROTOCOL} || -z ${TARGET_IP} || -z ${TARGET_PORT} || -z ${PROTECTED_SUBNET} || -z ${SNAT_IP} || -n ${EXTRA_FIELD} ]]; then
+			echo "Invalid private route '${RULE}'. Expected protocol|target_ip|target_port|protected_subnet|snat_ip."
+			exit 1
+		fi
+
+		if [[ ${PROTOCOL} != "tcp" && ${PROTOCOL} != "udp" ]]; then
+			echo "Invalid protocol '${PROTOCOL}' in private route '${RULE}'. Only tcp and udp are supported."
+			exit 1
+		fi
+
+		if ! isValidIPv4 "${TARGET_IP}" || ! isValidIPv4 "${SNAT_IP}" || ! isValidIPv4Cidr "${PROTECTED_SUBNET}"; then
+			echo "Invalid IPv4 address or CIDR in private route '${RULE}'."
+			exit 1
+		fi
+
+		if ! isValidPort "${TARGET_PORT}"; then
+			echo "Invalid port in private route '${RULE}'."
+			exit 1
+		fi
+
+		if ! ipv4BelongsToCidr "${TARGET_IP}" "${PROTECTED_SUBNET}"; then
+			echo "Private route target '${TARGET_IP}' is outside '${PROTECTED_SUBNET}'."
+			exit 1
+		fi
+
+		RULE_KEY="${PROTOCOL}|${TARGET_IP}|${TARGET_PORT}"
+		if [[ ${SEEN_RULE_KEYS} == *" ${RULE_KEY} "* ]]; then
+			echo "Duplicate private route '${RULE_KEY}'."
+			exit 1
+		fi
+		SEEN_RULE_KEYS+="${RULE_KEY} "
+	done
+}
+
+function appendPrivateRouteRules() {
+	local WG_CONFIG=$1
+	local WG_SUBNET="${SERVER_WG_IPV4%.*}.0/24"
+	local RULE
+	local PROTOCOL
+	local TARGET_IP
+	local TARGET_PORT
+	local PROTECTED_SUBNET
+	local SNAT_IP
+	local SEEN_PROTECTED_SUBNETS=" "
+
+	# Insert subnet rejects first. Target-specific accepts below are inserted
+	# above them, while broader WireGuard port accepts remain below them.
+	for RULE in ${PRIVATE_ROUTE_RULES:-}; do
+		IFS='|' read -r PROTOCOL TARGET_IP TARGET_PORT PROTECTED_SUBNET SNAT_IP <<<"${RULE}"
+		if [[ ${SEEN_PROTECTED_SUBNETS} != *" ${PROTECTED_SUBNET} "* ]]; then
+			echo "PostUp = iptables -w -I FORWARD 1 -i ${SERVER_WG_NIC} -s ${WG_SUBNET} -d ${PROTECTED_SUBNET} -j REJECT --reject-with icmp-port-unreachable" >>"${WG_CONFIG}"
+			SEEN_PROTECTED_SUBNETS+="${PROTECTED_SUBNET} "
+		fi
+	done
+
+	for RULE in ${PRIVATE_ROUTE_RULES:-}; do
+		IFS='|' read -r PROTOCOL TARGET_IP TARGET_PORT PROTECTED_SUBNET SNAT_IP <<<"${RULE}"
+
+		cat >>"${WG_CONFIG}" <<EOF
+PostUp = iptables -w -I FORWARD 1 -i ${SERVER_WG_NIC} -s ${WG_SUBNET} -d ${TARGET_IP} -p ${PROTOCOL} --dport ${TARGET_PORT} -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+PostUp = iptables -w -I FORWARD 1 -o ${SERVER_WG_NIC} -s ${TARGET_IP} -d ${WG_SUBNET} -p ${PROTOCOL} --sport ${TARGET_PORT} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+PostUp = iptables -w -t nat -I POSTROUTING 1 -s ${WG_SUBNET} -d ${TARGET_IP} -p ${PROTOCOL} --dport ${TARGET_PORT} -j SNAT --to-source ${SNAT_IP}
+PostDown = iptables -w -D FORWARD -i ${SERVER_WG_NIC} -s ${WG_SUBNET} -d ${TARGET_IP} -p ${PROTOCOL} --dport ${TARGET_PORT} -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+PostDown = iptables -w -D FORWARD -o ${SERVER_WG_NIC} -s ${TARGET_IP} -d ${WG_SUBNET} -p ${PROTOCOL} --sport ${TARGET_PORT} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+PostDown = iptables -w -t nat -D POSTROUTING -s ${WG_SUBNET} -d ${TARGET_IP} -p ${PROTOCOL} --dport ${TARGET_PORT} -j SNAT --to-source ${SNAT_IP}
+EOF
+	done
+
+	SEEN_PROTECTED_SUBNETS=" "
+	for RULE in ${PRIVATE_ROUTE_RULES:-}; do
+		IFS='|' read -r PROTOCOL TARGET_IP TARGET_PORT PROTECTED_SUBNET SNAT_IP <<<"${RULE}"
+		if [[ ${SEEN_PROTECTED_SUBNETS} != *" ${PROTECTED_SUBNET} "* ]]; then
+			echo "PostDown = iptables -w -D FORWARD -i ${SERVER_WG_NIC} -s ${WG_SUBNET} -d ${PROTECTED_SUBNET} -j REJECT --reject-with icmp-port-unreachable" >>"${WG_CONFIG}"
+			SEEN_PROTECTED_SUBNETS+="${PROTECTED_SUBNET} "
+		fi
 	done
 }
 
@@ -490,6 +627,7 @@ What DNS resolvers do you want to use for the clients?"
 	fi
 
 	validatePrivateForwardRules
+	validatePrivateRouteRules
 
 	if [[ "${HEADLESS}" != "1" ]]; then
 		echo ""
@@ -579,6 +717,7 @@ RESTRICT_TRAFFIC=${RESTRICT_TRAFFIC}
 RESTRICT_PORT=\"${RESTRICT_PORT[*]}\"
 RESTRICT_PORT_CONNTRACK=\"${RESTRICT_PORT_CONNTRACK[*]}\"
 PRIVATE_FORWARD_RULES=\"${PRIVATE_FORWARD_RULES[*]}\"
+PRIVATE_ROUTE_RULES=\"${PRIVATE_ROUTE_RULES[*]}\"
 CLIENT_CONFIG_DIR=${CLIENT_CONFIG_DIR}
 INSTALL_TIMESTAMP=$(date +%Y%m%d%H%M%S)" >/etc/wireguard/params
 
@@ -705,6 +844,7 @@ PostDown = iptables -D INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT" >>"/etc/wi
 		fi
 	fi
 
+	appendPrivateRouteRules "/etc/wireguard/${SERVER_WG_NIC}.conf"
 	appendPrivateForwardRules "/etc/wireguard/${SERVER_WG_NIC}.conf"
 
 	# Enable routing on the server
@@ -1066,6 +1206,7 @@ function updateWireGuard() {
 	fi
 
 	validatePrivateForwardRules
+	validatePrivateRouteRules
 
 	# Save existing clients
 	CLIENTS_BLOCK=$(sed -n '/^### Client/,$p' "/etc/wireguard/${SERVER_WG_NIC}.conf")
@@ -1090,6 +1231,7 @@ RESTRICT_TRAFFIC=${RESTRICT_TRAFFIC}
 RESTRICT_PORT=\"${RESTRICT_PORT[*]}\"
 RESTRICT_PORT_CONNTRACK=\"${RESTRICT_PORT_CONNTRACK[*]}\"
 PRIVATE_FORWARD_RULES=\"${PRIVATE_FORWARD_RULES[*]}\"
+PRIVATE_ROUTE_RULES=\"${PRIVATE_ROUTE_RULES[*]}\"
 CLIENT_CONFIG_DIR=${CLIENT_CONFIG_DIR}
 INSTALL_TIMESTAMP=${INSTALL_TIMESTAMP}" >/etc/wireguard/params
 
@@ -1224,6 +1366,7 @@ PostDown = iptables -D INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT" >>"/etc/wi
 		fi
 	fi
 
+	appendPrivateRouteRules "/etc/wireguard/${SERVER_WG_NIC}.conf"
 	appendPrivateForwardRules "/etc/wireguard/${SERVER_WG_NIC}.conf"
 
 	# Restore clients

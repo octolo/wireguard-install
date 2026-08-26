@@ -34,6 +34,10 @@ HEADLESS=0
 # The listener IP must equal SERVER_WG_IPV4.
 # PRIVATE_FORWARD_RULES="tcp|10.66.66.1|8006|10.0.5.10|8006|10.0.1.200"
 
+# Narrow routes to private services, separated by spaces. Each rule uses:
+# protocol|target_ip|target_port|protected_subnet|snat_ip
+# PRIVATE_ROUTE_RULES="tcp|10.0.5.20|443|10.0.5.0/24|10.0.1.200"
+
 # DNS resolvers
 # CLIENT_DNS_1=1.1.1.1
 # CLIENT_DNS_2=1.0.0.1
