@@ -129,6 +129,21 @@ function ipv4BelongsToCidr() {
 	(((ADDRESS_INTEGER & MASK) == (NETWORK_INTEGER & MASK)))
 }
 
+function ipv4IsExplicitlyAllowedHost() {
+	local ADDRESS=$1
+	local CIDR
+	local ALLOWED_IP_ENTRIES
+
+	ALLOWED_IP_ENTRIES=${ALLOWED_IPS//,/ }
+	for CIDR in ${ALLOWED_IP_ENTRIES}; do
+		if [[ ${CIDR} == "${ADDRESS}/32" ]]; then
+			return 0
+		fi
+	done
+
+	return 1
+}
+
 function validatePrivateForwardRules() {
 	local RULE
 	local PROTOCOL
@@ -164,8 +179,8 @@ function validatePrivateForwardRules() {
 			exit 1
 		fi
 
-		if [[ ${LISTEN_IP} != "${SERVER_WG_IPV4}" ]]; then
-			echo "Private forward '${RULE}' must listen on SERVER_WG_IPV4 (${SERVER_WG_IPV4})."
+		if [[ ${LISTEN_IP} != "${SERVER_WG_IPV4}" ]] && ! ipv4IsExplicitlyAllowedHost "${LISTEN_IP}"; then
+			echo "Private forward '${RULE}' listener must be SERVER_WG_IPV4 or an explicit /32 in client ALLOWED_IPS."
 			exit 1
 		fi
 
@@ -853,23 +868,11 @@ PostDown = iptables -D INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT" >>"/etc/wi
 	else
 		echo "net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1" >/etc/sysctl.d/wg.conf
+	fi
 
 	if [[ ${OS} == 'fedora' ]]; then
 		chmod -v 700 /etc/wireguard
 		chmod -v 600 /etc/wireguard/*
-	fi
-
-	if [[ ${OS} == 'alpine' ]]; then
-		sysctl -p /etc/sysctl.d/wg.conf
-		rc-update add sysctl
-		ln -s /etc/init.d/wg-quick "/etc/init.d/wg-quick.${SERVER_WG_NIC}"
-		rc-service "wg-quick.${SERVER_WG_NIC}" start
-		rc-update add "wg-quick.${SERVER_WG_NIC}"
-	else
-		sysctl --system
-
-		systemctl start "wg-quick@${SERVER_WG_NIC}"
-		systemctl enable "wg-quick@${SERVER_WG_NIC}"
 	fi
 
 	if [[ ${OS} == 'alpine' ]]; then
